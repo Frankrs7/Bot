@@ -328,21 +328,40 @@ class BotInterface:
         self.update_status()
 
     def calibrate_positions(self):
-        """Permitir ao usuário definir posições"""
-        self.log("Clique na posição da vida em 3 segundos...")
-        time.sleep(3)
+        """Permitir ao usuário definir posições com mais tempo e feedback visual"""
+        self.log("Clique na posição da vida em 5 segundos...")
+        time.sleep(1)
+        for i in range(5, 0, -1):  # Contagem regressiva de 5 segundos
+            self.log(f"{i}...")
+            time.sleep(1)
         self.bot.health_position = pyautogui.position()
         self.log(f"Vida configurada em {self.bot.health_position}")
 
-        self.log("Clique na posição da mana em 3 segundos...")
-        time.sleep(3)
+        self.log("Clique na posição da mana em 5 segundos...")
+        time.sleep(1)
+        for i in range(5, 0, -1):  # Contagem regressiva de 5 segundos
+            self.log(f"{i}...")
+            time.sleep(1)
         self.bot.mana_position = pyautogui.position()
         self.log(f"Mana configurada em {self.bot.mana_position}")
 
-        self.log("Clique na posição da capacidade em 3 segundos...")
-        time.sleep(3)
+        self.log("Clique na posição da capacidade em 5 segundos...")
+        time.sleep(1)
+        for i in range(5, 0, -1):  # Contagem regressiva de 5 segundos
+            self.log(f"{i}...")
+            time.sleep(1)
         self.bot.capacity_position = pyautogui.position()
         self.log(f"Capacidade configurada em {self.bot.capacity_position}")
+
+        # Validar se as coordenadas são diferentes
+        positions = [self.bot.health_position, self.bot.mana_position, self.bot.capacity_position]
+        if len(positions) != len(set(positions)):  # Verifica se há coordenadas repetidas
+            self.log("Erro: As coordenadas não podem ser iguais. Por favor, recalibre.")
+            self.bot.health_position = None
+            self.bot.mana_position = None
+            self.bot.capacity_position = None
+        else:
+            self.log("Calibração concluída com sucesso!")
 
     def update_status(self):
         """Atualizar o status na interface"""

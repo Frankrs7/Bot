@@ -1,39 +1,13 @@
 {
-    "heal_hotkey": "f1",
-    "mana_hotkey": "f2",
-    "attack_hotkey": "f3",
-    "health_position": [700, 35],
-    "mana_position": [700, 50],
-    "capacity_position": [900, 600],
-    "monster_positions": [[800, 400], [850, 450], [900, 500]],
-    "loot_coords": [],
-    "depot_waypoints": [
-        {"x": 700, "y": 300, "delay": 1.0},
-        {"x": 750, "y": 350, "delay": 1.2},
-        {"x": 800, "y": 400, "delay": 1.0}
-    ],
-    "bank_waypoints": [
-        {"x": 810, "y": 410, "delay": 1.0},
-        {"x": 820, "y": 420, "delay": 1.0}
-    ],
-    "npc_waypoints": [
-        {"x": 830, "y": 430, "delay": 1.0},
-        {"x": 840, "y": 440, "delay": 1.0}
-    ],
-    "hunt_waypoints": [
-        {"x": 800, "y": 400, "delay": 1.0},
-        {"x": 750, "y": 350, "delay": 1.2}
-    ],
-    "health_potion_name": "strong health potion",
-    "mana_potion_name": "strong mana potion",
-    "health_threshold": 50,
-    "mana_threshold": 30,
-    "items_to_buy": [
-        {"name": "strong health potion", "quantity": 50},
-        {"name": "strong mana potion", "quantity": 50}
-    ],
-    "items_to_deposit": [
-        {"name": "gold coin", "quantity": "all"},
-        {"name": "rope", "quantity": 10}
-    ]
+    "heal_hotkey": "f9",
+    "mana_hotkey": "f10",
+    "attack_hotkey": "f2",
+    "health_position": [390, 3314],
+    "mana_position": [800, 3364],
+    "capacity_position": [1288, 290],
+    "monster_positions": [[1210, 370]],
+    "health_potion_name": "health potion",
+    "mana_potion_name": "mana potion",
+    "health_threshold": 90,
+    "mana_threshold": 10
 }

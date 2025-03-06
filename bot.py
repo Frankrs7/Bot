@@ -7,8 +7,6 @@ import json
 from PIL import ImageGrab, Image
 import numpy as np
 import cv2
-import tkinter as tk
-from tkinter import scrolledtext, messagebox
 
 # Configurar logging
 logging.basicConfig(filename='tibia_bot.log', level=logging.INFO,
@@ -33,31 +31,18 @@ class TibiaBot:
                 self.attack_hotkey = config.get('attack_hotkey', 'f3')
                 
                 # Posições
-                self.health_position = config.get('health_position', [700, 35])
-                self.mana_position = config.get('mana_position', [700, 50])
-                self.capacity_position = config.get('capacity_position', [900, 600])
-                
-                # Waypoints
-                self.depot_waypoints = config.get('depot_waypoints', [])
-                self.bank_waypoints = config.get('bank_waypoints', [])
-                self.npc_waypoints = config.get('npc_waypoints', [])
-                self.hunt_waypoints = config.get('hunt_waypoints', [])
+                self.health_position = config.get('health_position', [390, 3314])
+                self.mana_position = config.get('mana_position', [800, 3364])
+                self.capacity_position = config.get('capacity_position', [1288, 290])
+                self.monster_positions = config.get('monster_positions', [[1210, 370]])
                 
                 # Itens
                 self.health_potion_name = config.get('health_potion_name', 'strong health potion')
                 self.mana_potion_name = config.get('mana_potion_name', 'strong mana potion')
-                self.items_to_buy = config.get('items_to_buy', [])
-                self.items_to_deposit = config.get('items_to_deposit', [])
                 
                 # Thresholds
                 self.health_threshold = config.get('health_threshold', 50)
                 self.mana_threshold = config.get('mana_threshold', 30)
-                
-                # Validar thresholds
-                if not (0 <= self.health_threshold <= 100):
-                    raise ValueError("health_threshold deve estar entre 0 e 100")
-                if not (0 <= self.mana_threshold <= 100):
-                    raise ValueError("mana_threshold deve estar entre 0 e 100")
                 
         except Exception as e:
             logging.error(f"Erro ao carregar configurações: {str(e)}")
@@ -103,7 +88,7 @@ class TibiaBot:
         """Verificar vida com base na captura da tela"""
         try:
             screenshot = ImageGrab.grab(bbox=(self.health_position[0], self.health_position[1], 
-                                             self.health_position[0] + 50, self.health_position[1] + 10))
+                                         self.health_position[0] + 50, self.health_position[1] + 10))
             img = np.array(screenshot)
             hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
             lower_green = np.array([40, 50, 50])
@@ -123,7 +108,7 @@ class TibiaBot:
         """Verificar mana com base na captura da tela"""
         try:
             screenshot = ImageGrab.grab(bbox=(self.mana_position[0], self.mana_position[1], 
-                                             self.mana_position[0] + 50, self.mana_position[1] + 10))
+                                         self.mana_position[0] + 50, self.mana_position[1] + 10))
             img = np.array(screenshot)
             hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
             lower_blue = np.array([90, 50, 50])
@@ -143,7 +128,7 @@ class TibiaBot:
         """Verificar se o inventário está cheio"""
         try:
             screenshot = ImageGrab.grab(bbox=(self.capacity_position[0], self.capacity_position[1], 
-                                             self.capacity_position[0] + 20, self.capacity_position[1] + 20))
+                                         self.capacity_position[0] + 20, self.capacity_position[1] + 20))
             img = np.array(screenshot)
             hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
             lower_red = np.array([0, 120, 70])
@@ -158,7 +143,7 @@ class TibiaBot:
             return False
 
     def find_monster(self):
-        """Encontrar e atacar monstros (simplificado)"""
+        """Encontrar e atacar monstros"""
         target_pos = random.choice(self.monster_positions)
         logging.info(f"Monstro encontrado em {target_pos}, atacando...")
         pyautogui.click(target_pos[0], target_pos[1])
@@ -180,59 +165,6 @@ class TibiaBot:
             pyautogui.rightClick(self.monster_positions[0][0] + x_offset,
                                 self.monster_positions[0][1] + y_offset)
             time.sleep(random.uniform(0.3, 0.7))
-
-    def move_to_waypoints(self, waypoints):
-        """Navegar por uma lista de waypoints"""
-        for wp in waypoints:
-            if not self.running or self.paused:
-                break
-            pyautogui.click(wp['x'], wp['y'])
-            time.sleep(wp.get('delay', 1.0))
-
-    def go_to_depot(self):
-        """Ir ao depot"""
-        if not self.depot_waypoints:
-            logging.warning("Waypoints do depot não configurados")
-            return
-        logging.info("Indo ao depot...")
-        self.move_to_waypoints(self.depot_waypoints)
-
-    def manage_inventory(self):
-        """Depositar itens e dinheiro"""
-        self.go_to_depot()
-        pyautogui.click(self.depot_waypoints[-1]['x'], self.depot_waypoints[-1]['y'])  # Último waypoint é o depot
-        time.sleep(1)
-        pyautogui.typewrite("deposit all\nyes")
-        time.sleep(1)
-        
-        if self.bank_waypoints:
-            logging.info("Indo ao banco...")
-            self.move_to_waypoints(self.bank_waypoints)
-            pyautogui.typewrite("hi\ndeposit all\nyes")
-            time.sleep(2)
-        logging.info("Itens e dinheiro depositados")
-
-    def buy_supplies(self):
-        """Comprar potes de vida e mana"""
-        if not self.npc_waypoints:
-            logging.warning("Waypoints do NPC não configurados")
-            return
-        logging.info("Indo ao NPC para comprar suprimentos...")
-        self.move_to_waypoints(self.npc_waypoints)
-        for item in self.items_to_buy:
-            pyautogui.typewrite(f"hi\nbuy {item['quantity']} {item['name']}\n")
-            time.sleep(1)
-        pyautogui.typewrite("bye")
-        time.sleep(2)
-        logging.info("Suprimentos comprados")
-
-    def return_to_hunt(self):
-        """Voltar à área de caça"""
-        if not self.hunt_waypoints:
-            logging.warning("Waypoints da hunt não configurados")
-            return
-        logging.info("Retornando à hunt...")
-        self.move_to_waypoints(self.hunt_waypoints)
 
     def move_character(self):
         """Mover personagem para explorar"""
@@ -264,11 +196,8 @@ class TibiaBot:
                     self.collect_loot()
 
                 if self.check_inventory():
-                    self.manage_inventory()
-                    self.buy_supplies()
-                    self.return_to_hunt()
-                else:
-                    self.move_character()
+                    logging.info("Inventário cheio. Pare o bot manualmente.")
+                    self.stop()
 
                 self.add_randomness()
                 time.sleep(random.uniform(0.2, 0.5))
@@ -276,124 +205,8 @@ class TibiaBot:
                 logging.error(f"Erro no ciclo principal: {str(e)}")
                 time.sleep(1)
 
-class BotInterface:
-    def __init__(self, root):
-        self.root = root
-        self.bot = TibiaBot()
-        self.setup_ui()
-
-    def setup_ui(self):
-        """Configurar a interface gráfica"""
-        self.root.title("Tibia Bot - Interface")
-        self.root.geometry("500x400")
-
-        # Botões
-        self.start_button = tk.Button(self.root, text="Iniciar", command=self.start_bot)
-        self.start_button.pack(pady=10)
-
-        self.pause_button = tk.Button(self.root, text="Pausar", command=self.pause_bot)
-        self.pause_button.pack(pady=10)
-
-        self.stop_button = tk.Button(self.root, text="Parar", command=self.stop_bot)
-        self.stop_button.pack(pady=10)
-
-        self.calibrate_button = tk.Button(self.root, text="Calibrar Posições", command=self.calibrate_positions)
-        self.calibrate_button.pack(pady=10)
-
-        self.status_label = tk.Label(self.root, text="Status: Parado")
-        self.status_label.pack(pady=5)
-
-        self.log_area = scrolledtext.ScrolledText(self.root, wrap=tk.WORD, width=60, height=15)
-        self.log_area.pack(pady=10)
-        self.log_area.config(state=tk.DISABLED)
-
-        self.redirect_logs()
-
-    def start_bot(self):
-        """Iniciar o bot"""
-        self.bot.start()
-        self.log("Bot iniciado.")
-        self.update_status()
-
-    def pause_bot(self):
-        """Pausar o bot"""
-        self.bot.pause()
-        self.log("Bot pausado." if self.bot.paused else "Bot retomado.")
-        self.update_status()
-
-    def stop_bot(self):
-        """Parar o bot"""
-        self.bot.stop()
-        self.log("Bot parado.")
-        self.update_status()
-
-    def calibrate_positions(self):
-        """Permitir ao usuário definir posições com mais tempo e feedback visual"""
-        self.log("Clique na posição da vida em 5 segundos...")
-        time.sleep(1)
-        for i in range(5, 0, -1):  # Contagem regressiva de 5 segundos
-            self.log(f"{i}...")
-            time.sleep(1)
-        self.bot.health_position = pyautogui.position()
-        self.log(f"Vida configurada em {self.bot.health_position}")
-
-        self.log("Clique na posição da mana em 5 segundos...")
-        time.sleep(1)
-        for i in range(5, 0, -1):  # Contagem regressiva de 5 segundos
-            self.log(f"{i}...")
-            time.sleep(1)
-        self.bot.mana_position = pyautogui.position()
-        self.log(f"Mana configurada em {self.bot.mana_position}")
-
-        self.log("Clique na posição da capacidade em 5 segundos...")
-        time.sleep(1)
-        for i in range(5, 0, -1):  # Contagem regressiva de 5 segundos
-            self.log(f"{i}...")
-            time.sleep(1)
-        self.bot.capacity_position = pyautogui.position()
-        self.log(f"Capacidade configurada em {self.bot.capacity_position}")
-
-        # Validar se as coordenadas são diferentes
-        positions = [self.bot.health_position, self.bot.mana_position, self.bot.capacity_position]
-        if len(positions) != len(set(positions)):  # Verifica se há coordenadas repetidas
-            self.log("Erro: As coordenadas não podem ser iguais. Por favor, recalibre.")
-            self.bot.health_position = None
-            self.bot.mana_position = None
-            self.bot.capacity_position = None
-        else:
-            self.log("Calibração concluída com sucesso!")
-
-    def update_status(self):
-        """Atualizar o status na interface"""
-        if self.bot.running:
-            status = "Pausado" if self.bot.paused else "Executando"
-        else:
-            status = "Parado"
-        self.status_label.config(text=f"Status: {status}")
-
-    def log(self, message):
-        """Exibir logs na interface"""
-        self.log_area.config(state=tk.NORMAL)
-        self.log_area.insert(tk.END, message + "\n")
-        self.log_area.config(state=tk.DISABLED)
-        self.log_area.yview(tk.END)
-
-    def redirect_logs(self):
-        """Redirecionar logs para a interface"""
-        class LogHandler(logging.Handler):
-            def __init__(self, log_method):
-                super().__init__()
-                self.log_method = log_method
-            def emit(self, record):
-                log_entry = self.format(record)
-                self.log_method(log_entry)
-        log_handler = LogHandler(self.log)
-        log_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
-        logging.getLogger().addHandler(log_handler)
-
 if __name__ == "__main__":
     print("Bot Tibia - AVISO: O uso de bots viola os termos de serviço do Tibia")
     print("Este script é apenas para fins educacionais")
-    root = tk.Tk()
-    app = BotInterface(root)
-    root.mainloop()
+    bot = TibiaBot()
+    bot.start()

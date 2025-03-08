@@ -1,0 +1,438 @@
+import time
+import threading
+import keyboard
+import cv2
+import numpy as np
+import pyautogui
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from PIL import Image, ImageTk, ImageGrab
+import json
+import os
+import random
+import win32gui
+import win32con
+import win32process
+import psutil
+
+class TibiaLuxBot:
+    def __init__(self):
+        self.running = False
+        self.paused = False
+        
+        # Configurações gerais
+        self.config = {
+            "hp_threshold": 70,           # Cura quando HP < 70%
+            "mana_threshold": 50,         # Usa mana pot quando mana < 50%
+            "attack_interval": 2.0,       # Intervalo entre ataques em segundos
+            "scan_interval": 0.3,         # Intervalo entre verificações em segundos
+            "loot_radius": 2,             # Raio de detecção de loot (em quadrados)
+            "anti_afk_interval": 300,     # Intervalo anti-AFK em segundos
+            "random_delay": True,         # Adiciona delays aleatórios
+            "tibia_window_name": "Tibia", # Nome da janela do Tibia
+            "battle_list_region": [1600, 300, 200, 400],  # [x, y, width, height]
+            "hp_bar_region": [100, 50, 150, 15],          # [x, y, width, height]
+            "mana_bar_region": [100, 70, 150, 15],        # [x, y, width, height]
+            "screen_resolution": [1920, 1080]             # Resolução da tela
+        }
+        
+        # Hotkeys
+        self.hotkeys = {
+            "hp_potion": "f1",
+            "mana_potion": "f2",
+            "attack_spell": "f3",
+            "heal_spell": "f4",
+            "exura_spell": "f5",
+            "exura_gran_spell": "f6",
+            "haste_spell": "f7",
+            "toggle_bot": "f12",
+            "emergency_stop": "end"
+        }
+        
+        # Módulos
+        self.modules = {
+            "healing": True,
+            "attacking": True,
+            "looting": True,
+            "cavebot": True,
+            "anti_afk": True,
+            "anti_detection": True,
+            "screenshot_alert": True,
+            "food_eating": True
+        }
+        
+        # Listas de itens
+        self.target_monsters = []
+        self.loot_items = []
+        self.waypoints = []
+        self.current_waypoint = 0
+        self.cavebot_routes = []
+        
+        # Estados e contadores
+        self.last_attack_time = 0
+        self.last_heal_time = 0
+        self.last_mana_time = 0
+        self.last_anti_afk_time = 0
+        self.last_eat_time = 0
+        self.last_haste_time = 0
+        self.character_position = (0, 0)
+        self.is_following_path = False
+        self.target_locked = False
+        self.current_target = None
+        
+        # Threads
+        self.threads = {}
+        self.stop_events = {}
+        
+        # Carregar recursos
+        self.load_resources()
+        
+        # Criar interface gráfica
+        self.create_gui()
+        
+    def load_resources(self):
+        try:
+            if os.path.exists("tibia_lux_config.json"):
+                with open("tibia_lux_config.json", "r") as f:
+                    saved_config = json.load(f)
+                    self.config.update(saved_config.get("config", {}))
+                    self.hotkeys.update(saved_config.get("hotkeys", {}))
+                    self.modules.update(saved_config.get("modules", {}))
+            
+            if os.path.exists("monster_list.json"):
+                with open("monster_list.json", "r") as f:
+                    self.target_monsters = json.load(f)
+            else:
+                self.target_monsters = [
+                    {"name": "Demon", "priority": 1, "attack": True, "image": None},
+                    {"name": "Dragon", "priority": 2, "attack": True, "image": None}
+                ]
+            
+            if os.path.exists("loot_items.json"):
+                with open("loot_items.json", "r") as f:
+                    self.loot_items = json.load(f)
+            else:
+                self.loot_items = [
+                    {"name": "Gold Coin", "priority": 1, "loot": True, "image": None}
+                ]
+            
+            if os.path.exists("waypoints.json"):
+                with open("waypoints.json", "r") as f:
+                    routes = json.load(f)
+                    self.cavebot_routes = routes.get("routes", [])
+                    if self.cavebot_routes:
+                        self.waypoints = self.cavebot_routes[0]["waypoints"]
+            else:
+                self.cavebot_routes = [{
+                    "name": "Test Route",
+                    "waypoints": [
+                        {"x": 100, "y": 100, "action": "walk", "wait": 0},
+                        {"x": 150, "y": 150, "action": "walk", "wait": 0}
+                    ]
+                }]
+                self.waypoints = self.cavebot_routes[0]["waypoints"]
+        except Exception as e:
+            self.log(f"Erro ao carregar recursos: {str(e)}")
+    
+    def save_resources(self):
+        try:
+            with open("tibia_lux_config.json", "w") as f:
+                json.dump({
+                    "config": self.config,
+                    "hotkeys": self.hotkeys,
+                    "modules": self.modules
+                }, f, indent=4)
+            with open("monster_list.json", "w") as f:
+                json.dump(self.target_monsters, f, indent=4)
+            with open("loot_items.json", "w") as f:
+                json.dump(self.loot_items, f, indent=4)
+            with open("waypoints.json", "w") as f:
+                json.dump({"routes": self.cavebot_routes}, f, indent=4)
+            self.log("Configurações salvas com sucesso")
+        except Exception as e:
+            self.log(f"Erro ao salvar configurações: {str(e)}")
+    
+    def create_gui(self):
+        self.root = tk.Tk()
+        self.root.title("TibiaLux Bot")
+        self.root.geometry("800x600")
+        
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        self.main_tab = ttk.Frame(self.notebook)
+        self.config_tab = ttk.Frame(self.notebook)
+        self.cavebot_tab = ttk.Frame(self.notebook)
+        self.monsters_tab = ttk.Frame(self.notebook)
+        self.loot_tab = ttk.Frame(self.notebook)
+        self.hotkeys_tab = ttk.Frame(self.notebook)
+        
+        self.notebook.add(self.main_tab, text="Principal")
+        self.notebook.add(self.config_tab, text="Configurações")
+        self.notebook.add(self.cavebot_tab, text="CaveBot")
+        self.notebook.add(self.monsters_tab, text="Monstros")
+        self.notebook.add(self.loot_tab, text="Loot")
+        self.notebook.add(self.hotkeys_tab, text="Hotkeys")
+        
+        self.status_var = tk.StringVar(value="Status: Pronto")
+        status_label = ttk.Label(self.root, textvariable=self.status_var)
+        status_label.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        self.setup_main_tab()
+        self.setup_config_tab()
+        self.setup_cavebot_tab()
+        self.setup_monsters_tab()
+        self.setup_loot_tab()
+        self.setup_hotkeys_tab()
+        
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        keyboard.add_hotkey(self.hotkeys["toggle_bot"], self.toggle_bot)
+        keyboard.add_hotkey(self.hotkeys["emergency_stop"], self.emergency_stop)
+    
+    def setup_main_tab(self):
+        ttk.Button(self.main_tab, text="Iniciar", command=self.start_bot).pack(pady=5)
+        ttk.Button(self.main_tab, text="Pausar", command=self.pause_bot).pack(pady=5)
+        ttk.Button(self.main_tab, text="Parar", command=self.stop_bot).pack(pady=5)
+        
+        self.log_text = tk.Text(self.main_tab, height=10)
+        self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        self.status_indicators = {}
+        for status in ["Bot", "Healing", "Attacking", "CaveBot"]:
+            frame = ttk.Frame(self.main_tab)
+            frame.pack(fill=tk.X)
+            ttk.Label(frame, text=f"{status}:").pack(side=tk.LEFT)
+            self.status_indicators[status.lower()] = tk.Label(frame, text="Inativo", fg="red")
+            self.status_indicators[status.lower()].pack(side=tk.LEFT)
+    
+    def setup_config_tab(self):
+        self.config_vars = {}
+        for key in ["hp_threshold", "mana_threshold", "attack_interval"]:
+            frame = ttk.Frame(self.config_tab)
+            frame.pack(fill=tk.X, pady=5)
+            ttk.Label(frame, text=f"{key.replace('_', ' ').title()}:").pack(side=tk.LEFT)
+            self.config_vars[key] = tk.DoubleVar(value=self.config[key])
+            ttk.Entry(frame, textvariable=self.config_vars[key]).pack(side=tk.LEFT)
+        ttk.Button(self.config_tab, text="Aplicar", command=self.apply_config).pack(pady=5)
+    
+    def setup_cavebot_tab(self):
+        self.route_var = tk.StringVar(value=self.cavebot_routes[0]["name"])
+        ttk.Combobox(self.cavebot_tab, textvariable=self.route_var, 
+                    values=[r["name"] for r in self.cavebot_routes]).pack(pady=5)
+        self.wp_listbox = tk.Listbox(self.cavebot_tab)
+        self.wp_listbox.pack(fill=tk.BOTH, expand=True)
+        self.update_waypoint_list()
+        ttk.Button(self.cavebot_tab, text="Adicionar Waypoint", command=self.add_waypoint).pack(pady=5)
+    
+    def setup_monsters_tab(self):
+        self.monster_listbox = tk.Listbox(self.monsters_tab)
+        self.monster_listbox.pack(fill=tk.BOTH, expand=True)
+        for monster in self.target_monsters:
+            self.monster_listbox.insert(tk.END, monster["name"])
+        ttk.Button(self.monsters_tab, text="Adicionar Monstro", command=self.add_monster).pack(pady=5)
+    
+    def setup_loot_tab(self):
+        self.loot_listbox = tk.Listbox(self.loot_tab)
+        self.loot_listbox.pack(fill=tk.BOTH, expand=True)
+        for item in self.loot_items:
+            self.loot_listbox.insert(tk.END, item["name"])
+        ttk.Button(self.loot_tab, text="Adicionar Item", command=self.add_loot_item).pack(pady=5)
+    
+    def setup_hotkeys_tab(self):
+        self.hotkey_vars = {}
+        for key, value in self.hotkeys.items():
+            frame = ttk.Frame(self.hotkeys_tab)
+            frame.pack(fill=tk.X, pady=5)
+            ttk.Label(frame, text=f"{key.replace('_', ' ').title()}:").pack(side=tk.LEFT)
+            self.hotkey_vars[key] = tk.StringVar(value=value)
+            ttk.Entry(frame, textvariable=self.hotkey_vars[key]).pack(side=tk.LEFT)
+    
+    def start_bot(self):
+        if not self.running:
+            self.running = True
+            self.paused = False
+            self.log("Bot iniciado")
+            self.update_status("bot", "Ativo", "green")
+            for module in self.modules:
+                if self.modules[module]:
+                    self.stop_events[module] = threading.Event()
+                    self.threads[module] = threading.Thread(target=getattr(self, f"run_{module}"), args=(self.stop_events[module],))
+                    self.threads[module].start()
+    
+    def stop_bot(self):
+        if self.running:
+            self.running = False
+            self.paused = False
+            for event in self.stop_events.values():
+                event.set()
+            for thread in self.threads.values():
+                thread.join()
+            self.threads.clear()
+            self.stop_events.clear()
+            self.log("Bot parado")
+            self.update_status("bot", "Inativo", "red")
+    
+    def pause_bot(self):
+        if self.running:
+            self.paused = not self.paused
+            self.log(f"Bot {'pausado' if self.paused else 'retomado'}")
+            self.update_status("bot", "Pausado" if self.paused else "Ativo", "yellow" if self.paused else "green")
+    
+    def toggle_bot(self):
+        if self.running:
+            self.stop_bot()
+        else:
+            self.start_bot()
+    
+    def emergency_stop(self):
+        self.stop_bot()
+        self.log("Parada de emergência")
+    
+    def run_healing(self, stop_event):
+        while self.running and not stop_event.is_set():
+            if not self.paused:
+                hp = self.check_health()
+                mana = self.check_mana()
+                if hp < self.config["hp_threshold"]:
+                    keyboard.press_and_release(self.hotkeys["heal_spell"])
+                    self.log(f"Curando: HP em {hp}%")
+                if mana < self.config["mana_threshold"]:
+                    keyboard.press_and_release(self.hotkeys["mana_potion"])
+                    self.log(f"Usando mana potion: Mana em {mana}%")
+            time.sleep(self.config["scan_interval"] + (random.uniform(0, 0.1) if self.config["random_delay"] else 0))
+    
+    def run_attacking(self, stop_event):
+        while self.running and not stop_event.is_set():
+            if not self.paused:
+                if time.time() - self.last_attack_time > self.config["attack_interval"]:
+                    self.attack_target()
+                    self.last_attack_time = time.time()
+            time.sleep(self.config["scan_interval"])
+    
+    def run_looting(self, stop_event):
+        while self.running and not stop_event.is_set():
+            if not self.paused:
+                self.loot_nearby()
+            time.sleep(self.config["scan_interval"] * 2)
+    
+    def run_cavebot(self, stop_event):
+        while self.running and not stop_event.is_set():
+            if not self.paused:
+                self.follow_waypoints()
+            time.sleep(self.config["scan_interval"])
+    
+    def run_anti_afk(self, stop_event):
+        while self.running and not stop_event.is_set():
+            if not self.paused and time.time() - self.last_anti_afk_time > self.config["anti_afk_interval"]:
+                keyboard.press_and_release("space")
+                self.last_anti_afk_time = time.time()
+                self.log("Anti-AFK: pulou")
+            time.sleep(1.0)
+    
+    def run_anti_detection(self, stop_event):
+        # Simula comportamento humano com pausas aleatórias
+        while self.running and not stop_event.is_set():
+            if not self.paused and random.random() < 0.05:  # 5% de chance por verificação
+                time.sleep(random.uniform(0.5, 2.0))
+                self.log("Anti-detecção: pausa aleatória")
+            time.sleep(1.0)
+    
+    def run_screenshot_alert(self, stop_event):
+        # Verifica se o processo de screenshot está ativo (simplificado)
+        while self.running and not stop_event.is_set():
+            if not self.paused and "Snipping Tool" in [p.name() for p in psutil.process_iter()]:
+                self.pause_bot()
+                self.log("Alerta: possível screenshot detectado")
+            time.sleep(5.0)
+    
+    def run_food_eating(self, stop_event):
+        while self.running and not stop_event.is_set():
+            if not self.paused and time.time() - self.last_eat_time > 600:  # Come a cada 10 minutos
+                keyboard.press_and_release("f8")  # Hotkey fictícia para comer
+                self.last_eat_time = time.time()
+                self.log("Comendo comida")
+            time.sleep(10.0)
+    
+    def check_health(self):
+        x, y, w, h = self.config["hp_bar_region"]
+        screenshot = pyautogui.screenshot(region=(x, y, w, h))
+        image = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        green_mask = cv2.inRange(hsv, (35, 50, 50), (85, 255, 255))
+        return (cv2.countNonZero(green_mask) / (w * h)) * 100
+    
+    def check_mana(self):
+        x, y, w, h = self.config["mana_bar_region"]
+        screenshot = pyautogui.screenshot(region=(x, y, w, h))
+        image = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        blue_mask = cv2.inRange(hsv, (90, 50, 50), (130, 255, 255))
+        return (cv2.countNonZero(blue_mask) / (w * h)) * 100
+    
+    def attack_target(self):
+        # Simulação simples: pressionar tecla de ataque
+        keyboard.press_and_release(self.hotkeys["attack_spell"])
+        self.log("Atacando alvo")
+        self.update_status("attacking", "Ativo", "green")
+    
+    def loot_nearby(self):
+        # Simulação: clicar ao redor do personagem
+        center_x, center_y = self.config["screen_resolution"][0] // 2, self.config["screen_resolution"][1] // 2
+        for _ in range(3):
+            x = center_x + random.randint(-50, 50)
+            y = center_y + random.randint(-50, 50)
+            pyautogui.click(x, y)
+            time.sleep(0.2)
+        self.log("Tentando coletar loot")
+    
+    def follow_waypoints(self):
+        if not self.waypoints or self.current_waypoint >= len(self.waypoints):
+            self.current_waypoint = 0
+            return
+        
+        wp = self.waypoints[self.current_waypoint]
+        self.log(f"Indo para waypoint {self.current_waypoint}: {wp['x']}, {wp['y']}")
+        pyautogui.click(wp["x"], wp["y"])
+        time.sleep(wp["wait"] + random.uniform(0, 0.5))
+        self.current_waypoint += 1
+        self.update_status("cavebot", "Ativo", "green")
+    
+    def update_status(self, key, text, color):
+        self.status_indicators[key].config(text=text, fg=color)
+    
+    def log(self, message):
+        self.log_text.insert(tk.END, f"[{time.strftime('%H:%M:%S')}] {message}\n")
+        self.log_text.see(tk.END)
+    
+    def apply_config(self):
+        for key, var in self.config_vars.items():
+            self.config[key] = var.get()
+        self.log("Configurações aplicadas")
+    
+    def add_waypoint(self):
+        new_wp = {"x": 100, "y": 100, "action": "walk", "wait": 0}
+        self.waypoints.append(new_wp)
+        self.update_waypoint_list()
+    
+    def update_waypoint_list(self):
+        self.wp_listbox.delete(0, tk.END)
+        for wp in self.waypoints:
+            self.wp_listbox.insert(tk.END, f"{wp['x']}, {wp['y']} - {wp['action']}")
+    
+    def add_monster(self):
+        new_monster = {"name": "Novo Monstro", "priority": 1, "attack": True, "image": None}
+        self.target_monsters.append(new_monster)
+        self.monster_listbox.insert(tk.END, new_monster["name"])
+    
+    def add_loot_item(self):
+        new_item = {"name": "Novo Item", "priority": 1, "loot": True, "image": None}
+        self.loot_items.append(new_item)
+        self.loot_listbox.insert(tk.END, new_item["name"])
+    
+    def on_close(self):
+        self.stop_bot()
+        self.root.destroy()
+
+if __name__ == "__main__":
+    bot = TibiaLuxBot()
+    bot.root.mainloop()

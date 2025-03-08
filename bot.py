@@ -1,212 +1,297 @@
-import pyautogui
 import time
-import random
+import threading
 import keyboard
-import logging
-import json
-from PIL import ImageGrab, Image
-import numpy as np
 import cv2
+import numpy as np
+import pyautogui
+import tkinter as tk
+from tkinter import ttk
+from PIL import Image, ImageTk, ImageGrab
 
-# Configurar logging
-logging.basicConfig(filename='tibia_bot.log', level=logging.INFO,
-                    format='%(asctime)s - %(message)s')
-
-class TibiaBot:
-    def __init__(self, config_file='config.json'):
+class TibiaLuxBot:
+    def __init__(self):
         self.running = False
-        self.paused = False
-        self.load_config(config_file)
-        self.setup_hotkeys()
-
-    def load_config(self, config_file):
-        """Carregar configurações de um arquivo JSON"""
-        try:
-            with open(config_file, 'r') as f:
-                config = json.load(f)
-                
-                # Hotkeys
-                self.heal_hotkey = config.get('heal_hotkey', 'f1')
-                self.mana_hotkey = config.get('mana_hotkey', 'f2')
-                self.attack_hotkey = config.get('attack_hotkey', 'f3')
-                
-                # Posições
-                self.health_position = config.get('health_position', [390, 3314])
-                self.mana_position = config.get('mana_position', [800, 3364])
-                self.capacity_position = config.get('capacity_position', [1288, 290])
-                self.monster_positions = config.get('monster_positions', [[1210, 370]])
-                
-                # Itens
-                self.health_potion_name = config.get('health_potion_name', 'strong health potion')
-                self.mana_potion_name = config.get('mana_potion_name', 'strong mana potion')
-                
-                # Thresholds
-                self.health_threshold = config.get('health_threshold', 50)
-                self.mana_threshold = config.get('mana_threshold', 30)
-                
-        except Exception as e:
-            logging.error(f"Erro ao carregar configurações: {str(e)}")
-            raise
-
-    def setup_hotkeys(self):
-        """Configurar hotkeys para controle do bot"""
-        keyboard.add_hotkey('esc', self.stop)
-        keyboard.add_hotkey('p', self.pause)
-
-    def start(self):
-        """Iniciar o bot"""
+        self.healing_active = False
+        self.looting_active = False
+        self.attacking_active = False
+        self.cavebot_active = False
+        
+        # Configurações gerais
+        self.heal_hp_threshold = 70  # Cura quando HP < 70%
+        self.mana_threshold = 50     # Usa mana potion quando mana < 50%
+        self.attack_interval = 2.0   # Intervalo entre ataques em segundos
+        self.scan_interval = 0.3     # Intervalo entre verificações em segundos
+        
+        # Teclas e hotkeys
+        self.hp_potion_key = 'f1'
+        self.mana_potion_key = 'f2'
+        self.attack_spell_key = 'f3'
+        self.heal_spell_key = 'f4'
+        self.toggle_key = 'f12'      # Liga/desliga o bot
+        
+        # Lista de monstros para atacar (por ordem de prioridade)
+        self.target_monsters = [
+            {"name": "Dragon", "priority": 1},
+            {"name": "Dragon Lord", "priority": 2},
+            {"name": "Demon", "priority": 3},
+            {"name": "Giant Spider", "priority": 4}
+        ]
+        
+        # Waypoints para CaveBot (coordenadas x, y)
+        self.waypoints = [
+            (100, 100),
+            (150, 200),
+            (200, 250),
+            (250, 200),
+            (200, 100)
+        ]
+        
+        # Inicializa interface gráfica
+        self.create_gui()
+        
+        # Inicializa thread principal do bot
+        self.bot_thread = None
+    
+    def create_gui(self):
+        # Cria janela principal
+        self.root = tk.Tk()
+        self.root.title("TibiaLux Inspired Bot")
+        self.root.geometry("500x600")
+        self.root.resizable(False, False)
+        
+        # Estilo
+        style = ttk.Style()
+        style.configure("TButton", padding=5, relief="flat", background="#333")
+        style.configure("TCheckbutton", background="#f0f0f0")
+        
+        # Frame principal
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Título
+        title_label = ttk.Label(main_frame, text="TibiaLux Bot", font=("Arial", 16, "bold"))
+        title_label.pack(pady=10)
+        
+        # Status
+        self.status_var = tk.StringVar(value="Bot: Inativo")
+        status_label = ttk.Label(main_frame, textvariable=self.status_var, font=("Arial", 12))
+        status_label.pack(pady=5)
+        
+        # Frame de configurações
+        config_frame = ttk.LabelFrame(main_frame, text="Configurações", padding=10)
+        config_frame.pack(fill=tk.X, pady=10)
+        
+        # Healing
+        ttk.Label(config_frame, text="HP Threshold:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        self.hp_scale = ttk.Scale(config_frame, from_=10, to=90, orient=tk.HORIZONTAL, length=200,
+                                 value=self.heal_hp_threshold)
+        self.hp_scale.grid(row=0, column=1, pady=5)
+        self.hp_value = ttk.Label(config_frame, text=f"{self.heal_hp_threshold}%")
+        self.hp_value.grid(row=0, column=2, padx=5)
+        
+        # Mana
+        ttk.Label(config_frame, text="Mana Threshold:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.mana_scale = ttk.Scale(config_frame, from_=10, to=90, orient=tk.HORIZONTAL, length=200,
+                                   value=self.mana_threshold)
+        self.mana_scale.grid(row=1, column=1, pady=5)
+        self.mana_value = ttk.Label(config_frame, text=f"{self.mana_threshold}%")
+        self.mana_value.grid(row=1, column=2, padx=5)
+        
+        # Módulos
+        modules_frame = ttk.LabelFrame(main_frame, text="Módulos", padding=10)
+        modules_frame.pack(fill=tk.X, pady=10)
+        
+        # Checkboxes para módulos
+        self.healing_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(modules_frame, text="Auto Healing", variable=self.healing_var).pack(anchor=tk.W, pady=2)
+        
+        self.attack_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(modules_frame, text="Auto Attack", variable=self.attack_var).pack(anchor=tk.W, pady=2)
+        
+        self.loot_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(modules_frame, text="Auto Loot", variable=self.loot_var).pack(anchor=tk.W, pady=2)
+        
+        self.cavebot_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(modules_frame, text="CaveBot", variable=self.cavebot_var).pack(anchor=tk.W, pady=2)
+        
+        # Lista de monstros
+        monsters_frame = ttk.LabelFrame(main_frame, text="Monstros Alvo", padding=10)
+        monsters_frame.pack(fill=tk.X, pady=10)
+        
+        # Lista com checkbox para cada monstro
+        for monster in self.target_monsters:
+            monster["var"] = tk.BooleanVar(value=True)
+            ttk.Checkbutton(monsters_frame, text=monster["name"], variable=monster["var"]).pack(anchor=tk.W)
+        
+        # Botões
+        buttons_frame = ttk.Frame(main_frame)
+        buttons_frame.pack(fill=tk.X, pady=10)
+        
+        start_button = ttk.Button(buttons_frame, text="Iniciar", command=self.start_bot)
+        start_button.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+        
+        stop_button = ttk.Button(buttons_frame, text="Parar", command=self.stop_bot)
+        stop_button.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+        
+        # Área de logs
+        log_frame = ttk.LabelFrame(main_frame, text="Logs", padding=10)
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        self.log_text = tk.Text(log_frame, height=10, width=50)
+        self.log_text.pack(fill=tk.BOTH, expand=True)
+        
+        # Atualizar valores dos sliders
+        self.hp_scale.configure(command=self.update_hp_value)
+        self.mana_scale.configure(command=self.update_mana_value)
+        
+        # Configurar encerramento adequado
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        
+    def update_hp_value(self, value):
+        value = int(float(value))
+        self.heal_hp_threshold = value
+        self.hp_value.configure(text=f"{value}%")
+        
+    def update_mana_value(self, value):
+        value = int(float(value))
+        self.mana_threshold = value
+        self.mana_value.configure(text=f"{value}%")
+    
+    def log(self, message):
+        timestamp = time.strftime("%H:%M:%S")
+        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.log_text.see(tk.END)
+    
+    def start_bot(self):
+        if not self.running:
+            self.running = True
+            self.status_var.set("Bot: Ativo")
+            self.healing_active = self.healing_var.get()
+            self.attacking_active = self.attack_var.get()
+            self.looting_active = self.loot_var.get()
+            self.cavebot_active = self.cavebot_var.get()
+            
+            self.log("Bot iniciado")
+            self.bot_thread = threading.Thread(target=self.bot_main_loop)
+            self.bot_thread.daemon = True
+            self.bot_thread.start()
+    
+    def stop_bot(self):
         if self.running:
-            logging.warning("Bot já está em execução")
-            return
-        self.running = True
-        self.paused = False
-        logging.info("Bot iniciado")
-        print("Bot iniciado. Pressione 'esc' para parar ou 'p' para pausar.")
-        try:
-            self.main_loop()
-        except Exception as e:
-            logging.error(f"Erro no loop principal: {str(e)}")
-            print(f"Erro: {str(e)}")
-        finally:
-            self.stop()
-
-    def stop(self):
-        """Parar o bot"""
-        self.running = False
-        self.paused = False
-        logging.info("Bot parado")
-        print("Bot parado")
-
-    def pause(self):
-        """Pausar o bot temporariamente"""
-        self.paused = not self.paused
-        status = "pausado" if self.paused else "retomado"
-        logging.info(f"Bot {status}")
-        print(f"Bot {status}")
-
-    def check_health(self):
-        """Verificar vida com base na captura da tela"""
-        try:
-            screenshot = ImageGrab.grab(bbox=(self.health_position[0], self.health_position[1], 
-                                         self.health_position[0] + 50, self.health_position[1] + 10))
-            img = np.array(screenshot)
-            hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
-            lower_green = np.array([40, 50, 50])
-            upper_green = np.array([80, 255, 255])
-            mask = cv2.inRange(hsv, lower_green, upper_green)
-            health_percentage = (cv2.countNonZero(mask) / (50 * 10)) * 100
-            if health_percentage < self.health_threshold:
-                logging.info(f"HP baixo ({health_percentage:.1f}%), curando...")
-                keyboard.press_and_release(self.heal_hotkey)
-                time.sleep(random.uniform(0.1, 0.3))
-            return health_percentage
-        except Exception as e:
-            logging.error(f"Erro ao verificar vida: {str(e)}")
-            return 100
-
-    def check_mana(self):
-        """Verificar mana com base na captura da tela"""
-        try:
-            screenshot = ImageGrab.grab(bbox=(self.mana_position[0], self.mana_position[1], 
-                                         self.mana_position[0] + 50, self.mana_position[1] + 10))
-            img = np.array(screenshot)
-            hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
-            lower_blue = np.array([90, 50, 50])
-            upper_blue = np.array([130, 255, 255])
-            mask = cv2.inRange(hsv, lower_blue, upper_blue)
-            mana_percentage = (cv2.countNonZero(mask) / (50 * 10)) * 100
-            if mana_percentage < self.mana_threshold:
-                logging.info(f"Mana baixa ({mana_percentage:.1f}%), usando poção...")
-                keyboard.press_and_release(self.mana_hotkey)
-                time.sleep(random.uniform(0.1, 0.3))
-            return mana_percentage
-        except Exception as e:
-            logging.error(f"Erro ao verificar mana: {str(e)}")
-            return 100
-
-    def check_inventory(self):
-        """Verificar se o inventário está cheio"""
-        try:
-            screenshot = ImageGrab.grab(bbox=(self.capacity_position[0], self.capacity_position[1], 
-                                         self.capacity_position[0] + 20, self.capacity_position[1] + 20))
-            img = np.array(screenshot)
-            hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
-            lower_red = np.array([0, 120, 70])
-            upper_red = np.array([10, 255, 255])
-            mask = cv2.inRange(hsv, lower_red, upper_red)
-            if cv2.countNonZero(mask) > 50:
-                logging.info("Inventário cheio detectado")
-                return True
-            return False
-        except Exception as e:
-            logging.error(f"Erro ao verificar inventário: {str(e)}")
-            return False
-
-    def find_monster(self):
-        """Encontrar e atacar monstros"""
-        target_pos = random.choice(self.monster_positions)
-        logging.info(f"Monstro encontrado em {target_pos}, atacando...")
-        pyautogui.click(target_pos[0], target_pos[1])
-        time.sleep(random.uniform(0.2, 0.5))
-        keyboard.press_and_release(self.attack_hotkey)
-        combat_duration = random.uniform(3.0, 8.0)
-        start_time = time.time()
-        while time.time() - start_time < combat_duration and self.running and not self.paused:
-            self.check_health()
-            time.sleep(random.uniform(0.5, 1.0))
-        return True
-
-    def collect_loot(self):
-        """Coletar loot após matar um monstro"""
-        logging.info("Coletando loot...")
-        for _ in range(random.randint(1, 3)):
-            x_offset = random.randint(-20, 20)
-            y_offset = random.randint(-20, 20)
-            pyautogui.rightClick(self.monster_positions[0][0] + x_offset,
-                                self.monster_positions[0][1] + y_offset)
-            time.sleep(random.uniform(0.3, 0.7))
-
-    def move_character(self):
-        """Mover personagem para explorar"""
-        direction = random.choice(['up', 'down', 'left', 'right'])
-        key = {'up': 'w', 'down': 's', 'left': 'a', 'right': 'd'}[direction]
-        logging.info(f"Movendo para {direction}")
-        keyboard.press(key)
-        time.sleep(random.uniform(0.5, 2.0))
-        keyboard.release(key)
-
-    def add_randomness(self):
-        """Adicionar comportamento aleatório"""
-        if random.randint(0, 100) < 5:
-            logging.info("Realizando ação aleatória...")
-            time.sleep(random.uniform(1.0, 3.0))
-
-    def main_loop(self):
-        """Loop principal do bot"""
+            self.running = False
+            self.status_var.set("Bot: Inativo")
+            self.log("Bot parado")
+    
+    def bot_main_loop(self):
+        self.log("Thread principal iniciada")
+        
+        last_attack_time = 0
+        current_waypoint = 0
+        
         while self.running:
             try:
-                if self.paused:
-                    time.sleep(1)
-                    continue
-
-                self.check_health()
-                self.check_mana()
-                monster_found = self.find_monster()
-                if monster_found:
-                    self.collect_loot()
-
-                if self.check_inventory():
-                    logging.info("Inventário cheio. Pare o bot manualmente.")
-                    self.stop()
-
-                self.add_randomness()
-                time.sleep(random.uniform(0.2, 0.5))
+                current_time = time.time()
+                
+                # Módulo de healing
+                if self.healing_active:
+                    self.check_health()
+                
+                # Módulo de ataque
+                if self.attacking_active and current_time - last_attack_time > self.attack_interval:
+                    if self.attack_target():
+                        last_attack_time = current_time
+                
+                # Módulo de looting
+                if self.looting_active:
+                    self.check_for_loot()
+                
+                # Módulo de CaveBot
+                if self.cavebot_active and len(self.waypoints) > 0:
+                    current_waypoint = self.move_to_waypoint(current_waypoint)
+                
+                # Intervalo entre verificações
+                time.sleep(self.scan_interval)
+                
             except Exception as e:
-                logging.error(f"Erro no ciclo principal: {str(e)}")
+                self.log(f"Erro: {str(e)}")
                 time.sleep(1)
+    
+    def check_health(self):
+        # Simulação de leitura de HP/Mana (na implementação real, usaria reconhecimento de imagem)
+        # Para um bot real, você precisaria capturar a tela e identificar a barra de HP/mana
+        
+        # Simulando HP baixo a cada ~10 segundos para demonstração
+        if time.time() % 10 < 1:
+            self.log("HP Baixo! Usando poção de vida")
+            keyboard.press_and_release(self.hp_potion_key)
+        
+        # Simulando Mana baixa a cada ~15 segundos para demonstração
+        if time.time() % 15 < 1:
+            self.log("Mana Baixa! Usando poção de mana")
+            keyboard.press_and_release(self.mana_potion_key)
+    
+    def attack_target(self):
+        # Simulação de detecção de monstro (no bot real, usaria reconhecimento de imagem)
+        # Ataca um monstro aleatório da lista para demonstração
+        
+        active_monsters = [m for m in self.target_monsters if m["var"].get()]
+        if not active_monsters:
+            return False
+        
+        # Simulação de encontrar monstro (frequência aleatória)
+        if np.random.random() < 0.3:  # 30% de chance de "encontrar" um monstro
+            monster = np.random.choice(active_monsters)
+            self.log(f"Atacando {monster['name']}")
+            keyboard.press_and_release(self.attack_spell_key)
+            return True
+        
+        return False
+    
+    def check_for_loot(self):
+        # Simulação de looting
+        # No bot real, identificaria corpos de monstros e clicaria para lootear
+        
+        # Simulação de loot a cada ~8 segundos
+        if time.time() % 8 < 0.3:
+            self.log("Coletando loot")
+            # Simulação de movimento do mouse para lootear
+            current_pos = pyautogui.position()
+            pyautogui.moveTo(current_pos[0] + 50, current_pos[1] + 50, duration=0.2)
+            pyautogui.click(button='right')
+            time.sleep(0.1)
+            pyautogui.moveTo(current_pos, duration=0.2)
+    
+    def move_to_waypoint(self, current_idx):
+        # Simulação de movimento entre waypoints
+        # No bot real, moveria o personagem clicando nas coordenadas
+        
+        # A cada ~5 segundos, move para o próximo waypoint
+        if time.time() % 5 < 0.3:
+            next_idx = (current_idx + 1) % len(self.waypoints)
+            wp = self.waypoints[next_idx]
+            self.log(f"Movendo para waypoint {next_idx}: ({wp[0]}, {wp[1]})")
+            return next_idx
+        
+        return current_idx
+    
+    def on_close(self):
+        self.stop_bot()
+        self.root.destroy()
+    
+    def run(self):
+        # Configurar hotkey global para ligar/desligar o bot
+        keyboard.add_hotkey(self.toggle_key, self.toggle_bot)
+        
+        # Iniciar loop da interface gráfica
+        self.root.mainloop()
+    
+    def toggle_bot(self):
+        if self.running:
+            self.stop_bot()
+        else:
+            self.start_bot()
 
+# Iniciar o bot
 if __name__ == "__main__":
-    print("Bot Tibia - AVISO: O uso de bots viola os termos de serviço do Tibia")
-    print("Este script é apenas para fins educacionais")
-    bot = TibiaBot()
-    bot.start()
+    bot = TibiaLuxBot()
+    bot.run()

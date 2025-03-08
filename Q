@@ -1,0 +1,287 @@
+import time
+import threading
+import keyboard
+import cv2
+import numpy as np
+import pyautogui
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from PIL import Image, ImageTk, ImageGrab
+import json
+import os
+import random
+import win32gui
+import win32con
+import win32process
+import psutil
+
+class TibiaLuxBot:
+    def __init__(self):
+        self.running = False
+        self.paused = False
+        # Configurações gerais
+        self.config = {
+            "hp_threshold": 70,
+            "mana_threshold": 50,
+            "attack_interval": 2.0,
+            "scan_interval": 0.3,
+            "loot_radius": 2,
+            "anti_afk_interval": 300,
+            "random_delay": True,
+            "tibia_window_name": "Tibia",
+            "battle_list_region": [1600, 300, 200, 400],
+            "hp_bar_region": [100, 50, 150, 15],
+            "mana_bar_region": [100, 70, 150, 15],
+            "screen_resolution": [1920, 1080]
+        }
+        # Hotkeys
+        self.hotkeys = {
+            "hp_potion": "f1",
+            "mana_potion": "f2",
+            "attack_spell": "f3",
+            "heal_spell": "f4",
+            "exura_spell": "f5",
+            "exura_gran_spell": "f6",
+            "haste_spell": "f7",
+            "toggle_bot": "f12",
+            "emergency_stop": "end"
+        }
+        # Módulos
+        self.modules = {
+            "healing": True,
+            "attacking": True,
+            "looting": True,
+            "cavebot": True,
+            "anti_afk": True,
+            "anti_detection": True,
+            "screenshot_alert": True,
+            "food_eating": True
+        }
+        # Listas de itens
+        self.target_monsters = []
+        self.loot_items = []
+        self.waypoints = []
+        self.current_waypoint = 0
+        self.cavebot_route = None
+        # Estados e contadores
+        self.last_attack_time = 0
+        self.last_heal_time = 0
+        self.last_mana_time = 0
+        self.last_anti_afk_time = 0
+        self.last_eat_time = 0
+        self.last_haste_time = 0
+        self.character_position = (0, 0)
+        self.is_following_path = False
+        self.is_resting = False
+        self.target_locked = False
+        self.current_target = None
+        self.healing_needed = False
+        # Carregar recursos
+        self.load_resources()
+        # Inicializar threads
+        self.threads = {}
+        self.stop_events = {}
+        # Criar interface gráfica
+        self.create_gui()
+
+    def load_resources(self):
+        # ... (implementação existente do método)
+
+    def save_resources(self):
+        # ... (implementação existente do método)
+
+    def create_gui(self):
+        # ... (implementação existente do método)
+
+    def setup_main_tab(self):
+        # ... (implementação existente do método)
+
+    def setup_config_tab(self):
+        # ... (implementação existente do método)
+
+    def setup_cavebot_tab(self):
+        # ... (implementação existente do método)
+
+    def setup_monsters_tab(self):
+        # ... (implementação existente do método)
+        # Completa a configuração da aba de monstros
+        entry_frame = ttk.Frame(main_monster_frame)
+        entry_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(entry_frame, text="Nome:").pack(side=tk.LEFT, padx=2)
+        self.monster_name = tk.StringVar()
+        ttk.Entry(entry_frame, textvariable=self.monster_name).pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
+        ttk.Label(entry_frame, text="Prioridade:").pack(side=tk.LEFT, padx=2)
+        self.monster_priority = tk.IntVar(value=1)
+        ttk.Entry(entry_frame, textvariable=self.monster_priority, width=3).pack(side=tk.LEFT, padx=2)
+        self.monster_attack = tk.BooleanVar(value=True)
+        ttk.Checkbutton(entry_frame, text="Atacar", variable=self.monster_attack).pack(side=tk.LEFT, padx=2)
+        ttk.Button(entry_frame, text="Selecionar Imagem", command=self.select_monster_image).pack(side=tk.LEFT, padx=2)
+
+    def setup_loot_tab(self):
+        main_loot_frame = ttk.Frame(self.loot_tab)
+        main_loot_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        ttk.Label(main_loot_frame, text="Lista de Itens para Loot", 
+                 font=("Arial", 12, "bold")).pack(pady=5)
+                 
+        loot_list_frame = ttk.Frame(main_loot_frame)
+        loot_list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        header_frame = ttk.Frame(loot_list_frame)
+        header_frame.pack(fill=tk.X)
+        ttk.Label(header_frame, text="Nome", width=20, anchor=tk.W).pack(side=tk.LEFT, padx=5)
+        ttk.Label(header_frame, text="Prioridade", width=10, anchor=tk.W).pack(side=tk.LEFT, padx=5)
+        ttk.Label(header_frame, text="Loot", width=8, anchor=tk.W).pack(side=tk.LEFT, padx=5)
+        
+        loot_scroll = ttk.Scrollbar(loot_list_frame)
+        loot_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.loot_list_canvas = tk.Canvas(loot_list_frame)
+        self.loot_list_frame_inner = ttk.Frame(self.loot_list_canvas)
+        self.loot_list_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        loot_scroll.config(command=self.loot_list_canvas.yview)
+        self.loot_list_canvas.config(yscrollcommand=loot_scroll.set)
+        self.loot_list_canvas.create_window((0, 0), window=self.loot_list_frame_inner, anchor=tk.NW)
+        self.loot_list_frame_inner.bind("<Configure>", lambda e: self.loot_list_canvas.configure(
+            scrollregion=self.loot_list_canvas.bbox("all")))
+            
+        self.fill_loot_list()
+        
+        action_frame = ttk.Frame(main_loot_frame)
+        action_frame.pack(fill=tk.X, pady=10)
+        ttk.Button(action_frame, text="Adicionar Item", command=self.add_loot_item).pack(side=tk.LEFT, padx=5)
+        ttk.Button(action_frame, text="Remover Item", command=self.remove_loot_item).pack(side=tk.LEFT, padx=5)
+        
+        entry_frame = ttk.Frame(main_loot_frame)
+        entry_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(entry_frame, text="Nome:").pack(side=tk.LEFT, padx=2)
+        self.loot_name = tk.StringVar()
+        ttk.Entry(entry_frame, textvariable=self.loot_name).pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
+        ttk.Label(entry_frame, text="Prioridade:").pack(side=tk.LEFT, padx=2)
+        self.loot_priority = tk.IntVar(value=1)
+        ttk.Entry(entry_frame, textvariable=self.loot_priority, width=3).pack(side=tk.LEFT, padx=2)
+        self.loot_enabled = tk.BooleanVar(value=True)
+        ttk.Checkbutton(entry_frame, text="Loot", variable=self.loot_enabled).pack(side=tk.LEFT, padx=2)
+        ttk.Button(entry_frame, text="Selecionar Imagem", command=self.select_loot_image).pack(side=tk.LEFT, padx=2)
+
+    def setup_hotkeys_tab(self):
+        main_hotkey_frame = ttk.Frame(self.hotkeys_tab)
+        main_hotkey_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        hotkey_frame = ttk.LabelFrame(main_hotkey_frame, text="Configuração de Hotkeys")
+        hotkey_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        self.hotkey_entries = {}
+        for i, (action, key) in enumerate(self.hotkeys.items()):
+            ttk.Label(hotkey_frame, text=action.replace("_", " ").title()).grid(row=i, column=0, padx=5, pady=2, sticky=tk.W)
+            self.hotkey_entries[action] = tk.StringVar(value=key)
+            ttk.Entry(hotkey_frame, textvariable=self.hotkey_entries[action]).grid(row=i, column=1, padx=5, pady=2)
+            
+        ttk.Button(main_hotkey_frame, text="Salvar Hotkeys", command=self.save_hotkeys).pack(pady=10)
+
+    def start_bot(self):
+        if not self.running:
+            self.running = True
+            self.paused = False
+            self.status_var.set("Status: Executando")
+            self.update_status_indicators()
+            self.start_threads()
+            self.log("Bot iniciado")
+
+    def stop_bot(self):
+        if self.running:
+            self.running = False
+            self.paused = False
+            self.status_var.set("Status: Parado")
+            self.update_status_indicators()
+            self.stop_threads()
+            self.log("Bot parado")
+
+    def pause_bot(self):
+        if self.running:
+            self.paused = not self.paused
+            status = "Pausado" if self.paused else "Executando"
+            self.status_var.set(f"Status: {status}")
+            self.log(f"Bot {status.lower()}")
+
+    def toggle_bot(self):
+        if self.running:
+            self.stop_bot()
+        else:
+            self.start_bot()
+
+    def emergency_stop(self):
+        self.stop_bot()
+        self.log("PARADA DE EMERGÊNCIA ATIVADA")
+
+    def start_threads(self):
+        self.stop_events = {
+            'healing': threading.Event(),
+            'attacking': threading.Event(),
+            'looting': threading.Event(),
+            'cavebot': threading.Event(),
+            'anti_afk': threading.Event()
+        }
+        
+        if self.modules['healing']:
+            self.threads['healing'] = threading.Thread(target=self.healing_thread)
+            self.threads['healing'].start()
+            
+        if self.modules['attacking']:
+            self.threads['attacking'] = threading.Thread(target=self.attacking_thread)
+            self.threads['attacking'].start()
+            
+        # Implementar outras threads aqui...
+
+    def stop_threads(self):
+        for event in self.stop_events.values():
+            event.set()
+        for thread in self.threads.values():
+            thread.join(timeout=2)
+
+    def healing_thread(self):
+        while self.running and not self.stop_events['healing'].is_set():
+            if not self.paused:
+                self.check_hp()
+                self.check_mana()
+            time.sleep(self.config['scan_interval'])
+
+    def check_hp(self):
+        # Lógica de verificação de HP usando OpenCV
+        pass
+
+    def check_mana(self):
+        # Lógica de verificação de mana usando OpenCV
+        pass
+
+    def attacking_thread(self):
+        while self.running and not self.stop_events['attacking'].is_set():
+            if not self.paused:
+                self.find_targets()
+                self.cast_attacks()
+            time.sleep(self.config['attack_interval'])
+
+    def find_targets(self):
+        # Lógica de detecção de monstros usando template matching
+        pass
+
+    def cast_attacks(self):
+        # Lógica de lançamento de spells/ataques
+        pass
+
+    # Implementar métodos para loot, cavebot, anti-AFK, etc.
+
+    def log(self, message):
+        self.log_text.insert(tk.END, f"[{time.strftime('%H:%M:%S')}] {message}\n")
+        self.log_text.see(tk.END)
+
+    def on_close(self):
+        self.save_resources()
+        self.stop_bot()
+        self.root.destroy()
+
+    def run(self):
+        self.root.mainloop()
+
+if __name__ == "__main__":
+    bot = TibiaLuxBot()
+    bot.run()

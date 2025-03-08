@@ -1,0 +1,962 @@
+import time
+import threading
+import keyboard
+import cv2
+import numpy as np
+import pyautogui
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from PIL import Image, ImageTk, ImageGrab
+import json
+import os
+import random
+
+class TibiaLuxBot:
+    def __init__(self):
+        self.running = False
+        self.paused = False
+        
+        # Configurações gerais
+        self.config = {
+            "hp_threshold": 70,           # Cura quando HP < 70%
+            "mana_threshold": 50,         # Usa mana pot quando mana < 50%
+            "attack_interval": 2.0,       # Intervalo entre ataques em segundos
+            "scan_interval": 0.3,         # Intervalo entre verificações em segundos
+            "loot_radius": 2,             # Raio de detecção de loot (em quadrados)
+            "anti_afk_interval": 300,     # Intervalo anti-AFK em segundos
+            "random_delay": True,         # Adiciona delays aleatórios para parecer humano
+            "tibia_window_name": "Tibia", # Nome da janela do Tibia
+            "battle_list_region": [1600, 300, 200, 400],  # Região da battle list [x, y, width, height]
+            "hp_bar_region": [100, 50, 150, 15],          # Região da barra de HP [x, y, width, height]
+            "mana_bar_region": [100, 70, 150, 15],        # Região da barra de mana [x, y, width, height]
+            "screen_resolution": [1920, 1080]             # Resolução da tela
+        }
+        
+        # Hotkeys
+        self.hotkeys = {
+            "hp_potion": "f1",
+            "mana_potion": "f2",
+            "attack_spell": "f3",
+            "heal_spell": "f4",
+            "exura_spell": "f5",
+            "exura_gran_spell": "f6",
+            "haste_spell": "f7",
+            "toggle_bot": "f12",
+            "emergency_stop": "end"
+        }
+        
+        # Módulos
+        self.modules = {
+            "healing": True,
+            "attacking": True,
+            "looting": True,
+            "cavebot": True,
+            "anti_afk": True,
+            "anti_detection": True,
+            "screenshot_alert": True,
+            "food_eating": True
+        }
+        
+        # Listas de itens
+        self.target_monsters = []
+        self.loot_items = []
+        self.waypoints = []
+        self.current_waypoint = 0
+        self.cavebot_route = None
+        
+        # Estados e contadores
+        self.last_attack_time = 0
+        self.last_heal_time = 0
+        self.last_mana_time = 0
+        self.last_anti_afk_time = 0
+        self.last_eat_time = 0
+        self.last_haste_time = 0
+        self.character_position = (0, 0)
+        self.is_following_path = False
+        self.is_resting = False
+        self.target_locked = False
+        self.current_target = None
+        self.healing_needed = False
+        
+        # Carregar recursos
+        self.load_resources()
+        
+        # Inicializar threads
+        self.threads = {}
+        self.stop_events = {}
+        
+        # Criar interface gráfica
+        self.create_gui()
+        
+    def load_resources(self):
+        try:
+            # Carregar configurações se existirem
+            if os.path.exists("tibia_lux_config.json"):
+                with open("tibia_lux_config.json", "r") as f:
+                    saved_config = json.load(f)
+                    self.config.update(saved_config.get("config", {}))
+                    self.hotkeys.update(saved_config.get("hotkeys", {}))
+                    self.modules.update(saved_config.get("modules", {}))
+            
+            # Carregar monstros
+            if os.path.exists("monster_list.json"):
+                with open("monster_list.json", "r") as f:
+                    self.target_monsters = json.load(f)
+            else:
+                # Lista padrão
+                self.target_monsters = [
+                    {"name": "Demon", "priority": 1, "attack": True, "image": None},
+                    {"name": "Dragon Lord", "priority": 2, "attack": True, "image": None},
+                    {"name": "Dragon", "priority": 3, "attack": True, "image": None},
+                    {"name": "Giant Spider", "priority": 4, "attack": True, "image": None},
+                    {"name": "Hydra", "priority": 5, "attack": True, "image": None}
+                ]
+            
+            # Carregar itens para loot
+            if os.path.exists("loot_items.json"):
+                with open("loot_items.json", "r") as f:
+                    self.loot_items = json.load(f)
+            else:
+                # Lista padrão
+                self.loot_items = [
+                    {"name": "Gold Coin", "priority": 1, "loot": True, "image": None},
+                    {"name": "Platinum Coin", "priority": 2, "loot": True, "image": None},
+                    {"name": "Small Diamond", "priority": 3, "loot": True, "image": None},
+                    {"name": "Dragon Ham", "priority": 4, "loot": True, "image": None}
+                ]
+            
+            # Carregar waypoints
+            if os.path.exists("waypoints.json"):
+                with open("waypoints.json", "r") as f:
+                    routes = json.load(f)
+                    if routes and "routes" in routes:
+                        self.cavebot_routes = routes["routes"]
+                        if len(self.cavebot_routes) > 0:
+                            self.cavebot_route = self.cavebot_routes[0]["name"]
+                            self.waypoints = self.cavebot_routes[0]["waypoints"]
+            else:
+                # Rota padrão
+                self.cavebot_routes = [{
+                    "name": "Example Route",
+                    "waypoints": [
+                        {"x": 100, "y": 100, "action": "walk", "wait": 0},
+                        {"x": 150, "y": 150, "action": "walk", "wait": 0},
+                        {"x": 200, "y": 200, "action": "rope", "wait": 2},
+                        {"x": 250, "y": 250, "action": "walk", "wait": 0},
+                        {"x": 200, "y": 300, "action": "ladder", "wait": 2}
+                    ]
+                }]
+                self.cavebot_route = "Example Route"
+                self.waypoints = self.cavebot_routes[0]["waypoints"]
+                
+        except Exception as e:
+            print(f"Error loading resources: {str(e)}")
+            # Configurar valores padrão em caso de erro
+    
+    def save_resources(self):
+        try:
+            # Salvar configurações
+            with open("tibia_lux_config.json", "w") as f:
+                json.dump({
+                    "config": self.config,
+                    "hotkeys": self.hotkeys,
+                    "modules": self.modules
+                }, f, indent=4)
+            
+            # Salvar monstros
+            with open("monster_list.json", "w") as f:
+                json.dump(self.target_monsters, f, indent=4)
+            
+            # Salvar itens para loot
+            with open("loot_items.json", "w") as f:
+                json.dump(self.loot_items, f, indent=4)
+            
+            # Salvar waypoints
+            with open("waypoints.json", "w") as f:
+                json.dump({"routes": self.cavebot_routes}, f, indent=4)
+                
+            self.log("Configurações salvas com sucesso")
+        except Exception as e:
+            self.log(f"Erro ao salvar configurações: {str(e)}")
+    
+    def create_gui(self):
+        # Criar janela principal
+        self.root = tk.Tk()
+        self.root.title("TibiaLux Bot Pro")
+        self.root.geometry("800x600")
+        self.root.minsize(800, 600)
+        
+        # Configurar estilo
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("TNotebook", background="#333")
+        style.configure("TFrame", background="#f0f0f0")
+        style.configure("TButton", padding=5, font=("Arial", 9))
+        style.configure("TLabel", font=("Arial", 9))
+        style.configure("TCheckbutton", font=("Arial", 9))
+        style.configure("Heading.TLabel", font=("Arial", 12, "bold"))
+        
+        # Criar abas
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Aba principal
+        self.main_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.main_tab, text="Principal")
+        
+        # Aba de configuração
+        self.config_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.config_tab, text="Configurações")
+        
+        # Aba de CaveBot
+        self.cavebot_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.cavebot_tab, text="CaveBot")
+        
+        # Aba de monstros
+        self.monsters_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.monsters_tab, text="Monstros")
+        
+        # Aba de loot
+        self.loot_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.loot_tab, text="Loot")
+        
+        # Aba de hotkeys
+        self.hotkeys_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.hotkeys_tab, text="Hotkeys")
+        
+        # Status bar
+        self.status_frame = ttk.Frame(self.root)
+        self.status_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.status_var = tk.StringVar(value="Status: Pronto")
+        status_label = ttk.Label(self.status_frame, textvariable=self.status_var)
+        status_label.pack(side=tk.LEFT)
+        
+        self.version_label = ttk.Label(self.status_frame, text="v2.1.0")
+        self.version_label.pack(side=tk.RIGHT)
+        
+        # Configurar conteúdo das abas
+        self.setup_main_tab()
+        self.setup_config_tab()
+        self.setup_cavebot_tab()
+        self.setup_monsters_tab()
+        self.setup_loot_tab()
+        self.setup_hotkeys_tab()
+        
+        # Configurar fechamento adequado
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        
+        # Configurar hotkeys globais
+        keyboard.add_hotkey(self.hotkeys["toggle_bot"], self.toggle_bot)
+        keyboard.add_hotkey(self.hotkeys["emergency_stop"], self.emergency_stop)
+    
+    def setup_main_tab(self):
+        # Frame superior com status e controles
+        top_frame = ttk.Frame(self.main_tab)
+        top_frame.pack(fill=tk.X, pady=10)
+        
+        # Status
+        status_frame = ttk.LabelFrame(top_frame, text="Status")
+        status_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+        
+        # Indicadores de status
+        self.status_indicators = {}
+        
+        row = 0
+        for status in ["Bot", "Healing", "Attacking", "Looting", "CaveBot"]:
+            ttk.Label(status_frame, text=f"{status}:").grid(row=row, column=0, sticky=tk.W, padx=5, pady=2)
+            self.status_indicators[status.lower()] = tk.Label(status_frame, text="Inativo", fg="red", bg="#f0f0f0")
+            self.status_indicators[status.lower()].grid(row=row, column=1, sticky=tk.W, padx=5, pady=2)
+            row += 1
+        
+        # Estatísticas
+        stats_frame = ttk.LabelFrame(top_frame, text="Estatísticas")
+        stats_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
+        
+        self.stats_vars = {
+            "tempo_execucao": tk.StringVar(value="00:00:00"),
+            "kills": tk.StringVar(value="0"),
+            "mortes": tk.StringVar(value="0"),
+            "hp_potions": tk.StringVar(value="0"),
+            "mana_potions": tk.StringVar(value="0")
+        }
+        
+        row = 0
+        for label, var in self.stats_vars.items():
+            display_label = label.replace("_", " ").title()
+            ttk.Label(stats_frame, text=f"{display_label}:").grid(row=row, column=0, sticky=tk.W, padx=5, pady=2)
+            ttk.Label(stats_frame, textvariable=var).grid(row=row, column=1, sticky=tk.W, padx=5, pady=2)
+            row += 1
+        
+        # Frame para módulos
+        modules_frame = ttk.LabelFrame(self.main_tab, text="Módulos")
+        modules_frame.pack(fill=tk.X, pady=10, padx=5)
+        
+        # Variáveis para checkboxes
+        self.module_vars = {}
+        
+        # Criar checkboxes para módulos em duas colunas
+        modules_list = list(self.modules.keys())
+        half = len(modules_list) // 2 + len(modules_list) % 2
+        
+        for i, module in enumerate(modules_list[:half]):
+            self.module_vars[module] = tk.BooleanVar(value=self.modules[module])
+            chk = ttk.Checkbutton(modules_frame, text=module.replace("_", " ").title(),
+                                 variable=self.module_vars[module],
+                                 command=lambda m=module: self.toggle_module(m))
+            chk.grid(row=i, column=0, sticky=tk.W, padx=10, pady=3)
+        
+        for i, module in enumerate(modules_list[half:]):
+            self.module_vars[module] = tk.BooleanVar(value=self.modules[module])
+            chk = ttk.Checkbutton(modules_frame, text=module.replace("_", " ").title(),
+                                 variable=self.module_vars[module],
+                                 command=lambda m=module: self.toggle_module(m))
+            chk.grid(row=i, column=1, sticky=tk.W, padx=10, pady=3)
+        
+        # Área de logs
+        log_frame = ttk.LabelFrame(self.main_tab, text="Logs")
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=10, padx=5)
+        
+        # Text widget com scrollbar
+        log_scroll = ttk.Scrollbar(log_frame)
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.log_text = tk.Text(log_frame, height=10, width=50, yscrollcommand=log_scroll.set)
+        self.log_text.pack(fill=tk.BOTH, expand=True)
+        log_scroll.config(command=self.log_text.yview)
+        
+        # Botões de controle
+        control_frame = ttk.Frame(self.main_tab)
+        control_frame.pack(fill=tk.X, pady=10, padx=5)
+        
+        ttk.Button(control_frame, text="Iniciar", command=self.start_bot).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="Pausar", command=self.pause_bot).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="Parar", command=self.stop_bot).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="Salvar Config", command=self.save_resources).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(control_frame, text="Calibrar Tela", command=self.calibrate_screen).pack(side=tk.RIGHT, padx=5)
+    
+    def setup_config_tab(self):
+        # Frame principal
+        main_config_frame = ttk.Frame(self.config_tab)
+        main_config_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Variáveis para sliders
+        self.config_vars = {}
+        
+        # Frame para configurações gerais
+        general_frame = ttk.LabelFrame(main_config_frame, text="Configurações Gerais")
+        general_frame.pack(fill=tk.X, pady=5)
+        
+        row = 0
+        for setting, value in [
+            ("hp_threshold", "Limiar de HP (%)"),
+            ("mana_threshold", "Limiar de Mana (%)"),
+            ("attack_interval", "Intervalo de Ataque (s)"),
+            ("scan_interval", "Intervalo de Varredura (s)"),
+            ("loot_radius", "Raio de Loot (quadrados)"),
+            ("anti_afk_interval", "Intervalo Anti-AFK (s)")
+        ]:
+            ttk.Label(general_frame, text=value).grid(row=row, column=0, sticky=tk.W, padx=5, pady=5)
+            
+            if setting in ["hp_threshold", "mana_threshold"]:
+                self.config_vars[setting] = tk.IntVar(value=self.config[setting])
+                slider = ttk.Scale(general_frame, from_=10, to=90, orient=tk.HORIZONTAL,
+                                  variable=self.config_vars[setting], length=200)
+                slider.grid(row=row, column=1, padx=5, pady=5)
+                ttk.Label(general_frame, textvariable=self.config_vars[setting]).grid(row=row, column=2, padx=5, pady=5)
+            
+            elif setting in ["attack_interval", "scan_interval"]:
+                self.config_vars[setting] = tk.DoubleVar(value=self.config[setting])
+                slider = ttk.Scale(general_frame, from_=0.1, to=5.0, orient=tk.HORIZONTAL,
+                                  variable=self.config_vars[setting], length=200)
+                slider.grid(row=row, column=1, padx=5, pady=5)
+                ttk.Label(general_frame, textvariable=self.config_vars[setting], 
+                         text=f"{self.config_vars[setting].get():.1f}").grid(row=row, column=2, padx=5, pady=5)
+            
+            elif setting == "loot_radius":
+                self.config_vars[setting] = tk.IntVar(value=self.config[setting])
+                slider = ttk.Scale(general_frame, from_=1, to=5, orient=tk.HORIZONTAL,
+                                  variable=self.config_vars[setting], length=200)
+                slider.grid(row=row, column=1, padx=5, pady=5)
+                ttk.Label(general_frame, textvariable=self.config_vars[setting]).grid(row=row, column=2, padx=5, pady=5)
+            
+            elif setting == "anti_afk_interval":
+                self.config_vars[setting] = tk.IntVar(value=self.config[setting])
+                slider = ttk.Scale(general_frame, from_=60, to=600, orient=tk.HORIZONTAL,
+                                  variable=self.config_vars[setting], length=200)
+                slider.grid(row=row, column=1, padx=5, pady=5)
+                ttk.Label(general_frame, textvariable=self.config_vars[setting]).grid(row=row, column=2, padx=5, pady=5)
+            
+            row += 1
+        
+        # Checkboxes adicionais
+        self.config_checkboxes = {}
+        self.config_checkboxes["random_delay"] = tk.BooleanVar(value=self.config["random_delay"])
+        ttk.Checkbutton(general_frame, text="Adicionar Delays Aleatórios",
+                       variable=self.config_checkboxes["random_delay"]).grid(
+                       row=row, column=0, columnspan=3, sticky=tk.W, padx=5, pady=5)
+        
+        # Frame para configurações da tela
+        screen_frame = ttk.LabelFrame(main_config_frame, text="Configurações de Tela")
+        screen_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Label(screen_frame, text="Nome da Janela do Tibia:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        self.tibia_window_var = tk.StringVar(value=self.config["tibia_window_name"])
+        ttk.Entry(screen_frame, textvariable=self.tibia_window_var).grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        
+        ttk.Label(screen_frame, text="Resolução:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        resolution_frame = ttk.Frame(screen_frame)
+        resolution_frame.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
+        
+        self.resolution_x = tk.IntVar(value=self.config["screen_resolution"][0])
+        self.resolution_y = tk.IntVar(value=self.config["screen_resolution"][1])
+        
+        ttk.Entry(resolution_frame, textvariable=self.resolution_x, width=5).pack(side=tk.LEFT)
+        ttk.Label(resolution_frame, text="x").pack(side=tk.LEFT, padx=2)
+        ttk.Entry(resolution_frame, textvariable=self.resolution_y, width=5).pack(side=tk.LEFT)
+        
+        # Botões para aplicar configurações
+        button_frame = ttk.Frame(main_config_frame)
+        button_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Button(button_frame, text="Aplicar", command=self.apply_config).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Restaurar Padrões", command=self.reset_config).pack(side=tk.RIGHT, padx=5)
+    
+    def setup_cavebot_tab(self):
+        # Frame principal
+        main_cavebot_frame = ttk.Frame(self.cavebot_tab)
+        main_cavebot_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Frame superior com seleção de rota
+        route_frame = ttk.Frame(main_cavebot_frame)
+        route_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(route_frame, text="Rota:").pack(side=tk.LEFT, padx=5)
+        
+        # Lista de rotas salvas
+        route_names = [route["name"] for route in self.cavebot_routes]
+        self.route_var = tk.StringVar(value=self.cavebot_route if self.cavebot_route else "")
+        self.route_combo = ttk.Combobox(route_frame, textvariable=self.route_var, values=route_names)
+        self.route_combo.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        self.route_combo.bind("<<ComboboxSelected>>", self.load_selected_route)
+        
+        # Botões de rota
+        ttk.Button(route_frame, text="Nova", command=self.new_route).pack(side=tk.LEFT, padx=2)
+        ttk.Button(route_frame, text="Renomear", command=self.rename_route).pack(side=tk.LEFT, padx=2)
+        ttk.Button(route_frame, text="Excluir", command=self.delete_route).pack(side=tk.LEFT, padx=2)
+        
+        # Frame para waypoints
+        waypoints_frame = ttk.LabelFrame(main_cavebot_frame, text="Waypoints")
+        waypoints_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        # Lista de waypoints com scrollbar
+        wp_scroll = ttk.Scrollbar(waypoints_frame)
+        wp_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.wp_listbox = tk.Listbox(waypoints_frame, yscrollcommand=wp_scroll.set)
+        self.wp_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        wp_scroll.config(command=self.wp_listbox.yview)
+        
+        # Mostrar waypoints atuais
+        self.update_waypoint_list()
+        
+        # Frame para ações de waypoint
+        wp_action_frame = ttk.Frame(main_cavebot_frame)
+        wp_action_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(wp_action_frame, text="Adicionar", command=self.add_waypoint).pack(side=tk.LEFT, padx=2)
+        ttk.Button(wp_action_frame, text="Remover", command=self.remove_waypoint).pack(side=tk.LEFT, padx=2)
+        ttk.Button(wp_action_frame, text="Editar", command=self.edit_waypoint).pack(side=tk.LEFT, padx=2)
+        ttk.Button(wp_action_frame, text="Subir", command=self.move_waypoint_up).pack(side=tk.LEFT, padx=2)
+        ttk.Button(wp_action_frame, text="Descer", command=self.move_waypoint_down).pack(side=tk.LEFT, padx=2)
+        
+        # Botão para importar/exportar
+        io_frame = ttk.Frame(main_cavebot_frame)
+        io_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Button(io_frame, text="Importar Waypoints", command=self.import_waypoints).pack(side=tk.LEFT, padx=5)
+        ttk.Button(io_frame, text="Exportar Waypoints", command=self.export_waypoints).pack(side=tk.LEFT, padx=5)
+        ttk.Button(io_frame, text="Capturar Waypoints", command=self.capture_waypoints).pack(side=tk.RIGHT, padx=5)
+    
+    def setup_monsters_tab(self):
+        # Frame principal
+        main_monster_frame = ttk.Frame(self.monsters_tab)
+        main_monster_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Cabeçalho
+        ttk.Label(main_monster_frame, text="Lista de Monstros-Alvo", 
+                 font=("Arial", 12, "bold")).pack(pady=5)
+        
+        # Frame para lista de monstros com scrollbar
+        monster_list_frame = ttk.Frame(main_monster_frame)
+        monster_list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        # Cabeçalhos da tabela
+        header_frame = ttk.Frame(monster_list_frame)
+        header_frame.pack(fill=tk.X)
+        
+        ttk.Label(header_frame, text="Nome", width=20, anchor=tk.W).pack(side=tk.LEFT, padx=5)
+        ttk.Label(header_frame, text="Prioridade", width=10, anchor=tk.W).pack(side=tk.LEFT, padx=5)
+        ttk.Label(header_frame, text="Atacar", width=8, anchor=tk.W).pack(side=tk.LEFT, padx=5)
+        ttk.Label(header_frame, text="Imagem", width=15, anchor=tk.W).pack(side=tk.LEFT, padx=5)
+        
+        # Lista de monstros com scrollbar
+        monster_scroll = ttk.Scrollbar(monster_list_frame)
+        monster_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.monster_list_canvas = tk.Canvas(monster_list_frame)
+        self.monster_list_frame_inner = ttk.Frame(self.monster_list_canvas)
+        
+        self.monster_list_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        monster_scroll.config(command=self.monster_list_canvas.yview)
+        self.monster_list_canvas.config(yscrollcommand=monster_scroll.set)
+        
+        self.monster_list_canvas.create_window((0, 0), window=self.monster_list_frame_inner, anchor=tk.NW)
+        self.monster_list_frame_inner.bind("<Configure>", lambda e: self.monster_list_canvas.configure(
+            scrollregion=self.monster_list_canvas.bbox("all")))
+        
+        # Preencher a lista de monstros
+        self.fill_monster_list()
+        
+        # Botões de ação
+        action_frame = ttk.Frame(main_monster_frame)
+        action_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Button(action_frame, text="Adicionar Monstro", command=self.add_monster).pack(side=tk.LEFT, padx=5)
+        ttk.Button(action_frame, text="Remover Monstro", command=self.remove_monster).pack(side=tk.LEFT, padx=5)
+    
+    def fill_monster_list(self):
+        # Limpar lista atual
+        for widget in self.monster_list_frame_inner.winfo_children():
+            widget.destroy()
+        
+        # Preencher com monstros
+        for i, monster in enumerate(self.target_monsters):
+            row_frame = ttk.Frame(self.monster_list_frame_inner)
+            row_frame.pack(fill=tk.X, pady=2)
+            
+            # Nome
+            name_var = tk.StringVar(value=monster["name"])
+            ttk.Entry(row_frame, textvariable=name_var, width=20).pack(side=tk.LEFT, padx=5)
+            
+            # Prioridade
+            priority_var = tk.IntVar(value=monster["priority"])
+            ttk.Entry(row_frame, textvariable=priority_var, width=10).pack(side=tk.LEFT, padx=5)
+            
+            # Atacar
+            attack_var = tk.BooleanVar(value=monster["attack"])
+            ttk.Checkbutton(row_frame, variable=attack_var).pack(side=tk.LEFT, padx=5)
+            
+            # Imagem
+            image_var = tk.StringVar(value=monster["image"] if monster["image"] else "")
+            ttk.Entry(row_frame, textvariable=image_var, width=15).pack(side=tk.LEFT, padx=5)
+            ttk.Button(row_frame, text="Carregar", command=lambda m=monster: self.load_monster_image(m)).pack(side=tk.LEFT, padx=5)
+            
+            # Atualizar monstro na lista
+            monster["name"] = name_var
+            monster["priority"] = priority_var
+            monster["attack"] = attack_var
+            monster["image"] = image_var
+    
+    def load_monster_image(self, monster):
+        # Abrir diálogo para carregar imagem
+        file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.png;*.jpg;*.jpeg")])
+        if file_path:
+            monster["image"] = file_path
+            self.fill_monster_list()
+    
+    def add_monster(self):
+        # Adicionar novo monstro à lista
+        self.target_monsters.append({
+            "name": "Novo Monstro",
+            "priority": 1,
+            "attack": True,
+            "image": None
+        })
+        self.fill_monster_list()
+    
+    def remove_monster(self):
+        # Remover monstro selecionado
+        selected = self.monster_list_canvas.winfo_children()
+        if selected:
+            self.target_monsters.pop(selected[0])
+            self.fill_monster_list()
+    
+    def update_waypoint_list(self):
+        # Atualizar lista de waypoints
+        self.wp_listbox.delete(0, tk.END)
+        for wp in self.waypoints:
+            self.wp_listbox.insert(tk.END, f"{wp['x']}, {wp['y']} - {wp['action']}")
+    
+    def add_waypoint(self):
+        # Adicionar novo waypoint
+        self.waypoints.append({
+            "x": 0,
+            "y": 0,
+            "action": "walk",
+            "wait": 0
+        })
+        self.update_waypoint_list()
+    
+    def remove_waypoint(self):
+        # Remover waypoint selecionado
+        selected = self.wp_listbox.curselection()
+        if selected:
+            self.waypoints.pop(selected[0])
+            self.update_waypoint_list()
+    
+    def edit_waypoint(self):
+        # Editar waypoint selecionado
+        selected = self.wp_listbox.curselection()
+        if selected:
+            wp = self.waypoints[selected[0]]
+            self.edit_waypoint_dialog(wp)
+    
+    def edit_waypoint_dialog(self, waypoint):
+        # Diálogo para editar waypoint
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Editar Waypoint")
+        
+        ttk.Label(dialog, text="X:").grid(row=0, column=0, padx=5, pady=5)
+        x_var = tk.IntVar(value=waypoint["x"])
+        ttk.Entry(dialog, textvariable=x_var).grid(row=0, column=1, padx=5, pady=5)
+        
+        ttk.Label(dialog, text="Y:").grid(row=1, column=0, padx=5, pady=5)
+        y_var = tk.IntVar(value=waypoint["y"])
+        ttk.Entry(dialog, textvariable=y_var).grid(row=1, column=1, padx=5, pady=5)
+        
+        ttk.Label(dialog, text="Ação:").grid(row=2, column=0, padx=5, pady=5)
+        action_var = tk.StringVar(value=waypoint["action"])
+        ttk.Combobox(dialog, textvariable=action_var, values=["walk", "rope", "ladder"]).grid(row=2, column=1, padx=5, pady=5)
+        
+        ttk.Label(dialog, text="Espera (s):").grid(row=3, column=0, padx=5, pady=5)
+        wait_var = tk.IntVar(value=waypoint["wait"])
+        ttk.Entry(dialog, textvariable=wait_var).grid(row=3, column=1, padx=5, pady=5)
+        
+        ttk.Button(dialog, text="Salvar", command=lambda: self.save_waypoint(waypoint, x_var, y_var, action_var, wait_var, dialog)).grid(row=4, column=0, columnspan=2, pady=10)
+    
+    def save_waypoint(self, waypoint, x_var, y_var, action_var, wait_var, dialog):
+        # Salvar alterações no waypoint
+        waypoint["x"] = x_var.get()
+        waypoint["y"] = y_var.get()
+        waypoint["action"] = action_var.get()
+        waypoint["wait"] = wait_var.get()
+        self.update_waypoint_list()
+        dialog.destroy()
+    
+    def move_waypoint_up(self):
+        # Mover waypoint para cima na lista
+        selected = self.wp_listbox.curselection()
+        if selected and selected[0] > 0:
+            index = selected[0]
+            self.waypoints[index], self.waypoints[index - 1] = self.waypoints[index - 1], self.waypoints[index]
+            self.update_waypoint_list()
+            self.wp_listbox.select_set(index - 1)
+    
+    def move_waypoint_down(self):
+        # Mover waypoint para baixo na lista
+        selected = self.wp_listbox.curselection()
+        if selected and selected[0] < len(self.waypoints) - 1:
+            index = selected[0]
+            self.waypoints[index], self.waypoints[index + 1] = self.waypoints[index + 1], self.waypoints[index]
+            self.update_waypoint_list()
+            self.wp_listbox.select_set(index + 1)
+    
+    def import_waypoints(self):
+        # Importar waypoints de um arquivo
+        file_path = filedialog.askopenfilename(filetypes=[("JSON Files", "*.json")])
+        if file_path:
+            with open(file_path, "r") as f:
+                self.waypoints = json.load(f)
+            self.update_waypoint_list()
+    
+    def export_waypoints(self):
+        # Exportar waypoints para um arquivo
+        file_path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON Files", "*.json")])
+        if file_path:
+            with open(file_path, "w") as f:
+                json.dump(self.waypoints, f, indent=4)
+    
+    def capture_waypoints(self):
+        # Capturar waypoints da tela
+        self.log("Capturando waypoints...")
+        self.paused = True
+        self.status_var.set("Status: Capturando Waypoints")
+    
+    def load_selected_route(self, event=None):
+        # Carregar rota selecionada
+        selected_route = self.route_var.get()
+        for route in self.cavebot_routes:
+            if route["name"] == selected_route:
+                self.waypoints = route["waypoints"]
+                self.update_waypoint_list()
+                break
+    
+    def new_route(self):
+        # Criar nova rota
+        route_name = simpledialog.askstring("Nova Rota", "Nome da Rota:")
+        if route_name:
+            self.cavebot_routes.append({
+                "name": route_name,
+                "waypoints": []
+            })
+            self.route_combo["values"] = [route["name"] for route in self.cavebot_routes]
+            self.route_var.set(route_name)
+            self.waypoints = []
+            self.update_waypoint_list()
+    
+    def rename_route(self):
+        # Renomear rota selecionada
+        selected_route = self.route_var.get()
+        new_name = simpledialog.askstring("Renomear Rota", "Novo Nome:", initialvalue=selected_route)
+        if new_name:
+            for route in self.cavebot_routes:
+                if route["name"] == selected_route:
+                    route["name"] = new_name
+                    break
+            self.route_combo["values"] = [route["name"] for route in self.cavebot_routes]
+            self.route_var.set(new_name)
+    
+    def delete_route(self):
+        # Excluir rota selecionada
+        selected_route = self.route_var.get()
+        if messagebox.askyesno("Excluir Rota", f"Tem certeza que deseja excluir a rota '{selected_route}'?"):
+            self.cavebot_routes = [route for route in self.cavebot_routes if route["name"] != selected_route]
+            self.route_combo["values"] = [route["name"] for route in self.cavebot_routes]
+            if self.cavebot_routes:
+                self.route_var.set(self.cavebot_routes[0]["name"])
+                self.waypoints = self.cavebot_routes[0]["waypoints"]
+            else:
+                self.route_var.set("")
+                self.waypoints = []
+            self.update_waypoint_list()
+    
+    def toggle_module(self, module):
+        # Ativar/desativar módulo
+        self.modules[module] = self.module_vars[module].get()
+        self.log(f"Módulo {module} {'ativado' if self.modules[module] else 'desativado'}")
+    
+    def apply_config(self):
+        # Aplicar configurações
+        for setting, var in self.config_vars.items():
+            self.config[setting] = var.get()
+        self.config["random_delay"] = self.config_checkboxes["random_delay"].get()
+        self.config["tibia_window_name"] = self.tibia_window_var.get()
+        self.config["screen_resolution"] = [self.resolution_x.get(), self.resolution_y.get()]
+        self.log("Configurações aplicadas")
+    
+    def reset_config(self):
+        # Restaurar configurações padrão
+        self.config = {
+            "hp_threshold": 70,
+            "mana_threshold": 50,
+            "attack_interval": 2.0,
+            "scan_interval": 0.3,
+            "loot_radius": 2,
+            "anti_afk_interval": 300,
+            "random_delay": True,
+            "tibia_window_name": "Tibia",
+            "battle_list_region": [1600, 300, 200, 400],
+            "hp_bar_region": [100, 50, 150, 15],
+            "mana_bar_region": [100, 70, 150, 15],
+            "screen_resolution": [1920, 1080]
+        }
+        self.log("Configurações restauradas")
+    
+    def log(self, message):
+        # Adicionar mensagem ao log
+        timestamp = time.strftime("%H:%M:%S")
+        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.log_text.see(tk.END)
+    
+    def start_bot(self):
+        # Iniciar bot
+        if not self.running:
+            self.running = True
+            self.status_var.set("Status: Executando")
+            self.log("Bot iniciado")
+            self.bot_thread = threading.Thread(target=self.bot_main_loop)
+            self.bot_thread.daemon = True
+            self.bot_thread.start()
+    
+    def pause_bot(self):
+        # Pausar bot
+        if self.running:
+            self.paused = not self.paused
+            self.status_var.set("Status: Pausado" if self.paused else "Status: Executando")
+            self.log("Bot pausado" if self.paused else "Bot retomado")
+    
+    def stop_bot(self):
+        # Parar bot
+        if self.running:
+            self.running = False
+            self.status_var.set("Status: Parado")
+            self.log("Bot parado")
+    
+    def emergency_stop(self):
+        # Parada de emergência
+        self.stop_bot()
+        self.log("Parada de emergência acionada")
+    
+    def bot_main_loop(self):
+        # Loop principal do bot
+        while self.running:
+            if not self.paused:
+                # Executar módulos
+                if self.modules["healing"]:
+                    self.check_health()
+                if self.modules["attacking"]:
+                    self.attack_target()
+                if self.modules["looting"]:
+                    self.check_for_loot()
+                if self.modules["cavebot"]:
+                    self.follow_waypoints()
+                if self.modules["anti_afk"]:
+                    self.anti_afk()
+                if self.modules["anti_detection"]:
+                    self.anti_detection()
+                if self.modules["screenshot_alert"]:
+                    self.check_for_screenshot()
+                if self.modules["food_eating"]:
+                    self.eat_food()
+            
+            # Intervalo entre verificações
+            time.sleep(self.config["scan_interval"])
+    
+    def check_health(self):
+        # Verificar HP e mana
+        if self.get_hp_percent() < self.config["hp_threshold"]:
+            self.use_potion(self.hotkeys["hp_potion"])
+            self.log("Usando poção de HP")
+        if self.get_mana_percent() < self.config["mana_threshold"]:
+            self.use_potion(self.hotkeys["mana_potion"])
+            self.log("Usando poção de Mana")
+    
+    def attack_target(self):
+        # Atacar monstro
+        if time.time() - self.last_attack_time > self.config["attack_interval"]:
+            target = self.find_target()
+            if target:
+                self.lock_target(target)
+                self.use_spell(self.hotkeys["attack_spell"])
+                self.last_attack_time = time.time()
+                self.log(f"Atacando {target['name']}")
+    
+    def check_for_loot(self):
+        # Verificar loot
+        loot = self.find_loot()
+        if loot:
+            self.pickup_loot(loot)
+            self.log(f"Coletando {loot['name']}")
+    
+    def follow_waypoints(self):
+        # Seguir waypoints
+        if self.waypoints:
+            wp = self.waypoints[self.current_waypoint]
+            self.move_to(wp["x"], wp["y"])
+            if wp["action"] == "rope":
+                self.use_rope()
+            elif wp["action"] == "ladder":
+                self.use_ladder()
+            time.sleep(wp["wait"])
+            self.current_waypoint = (self.current_waypoint + 1) % len(self.waypoints)
+    
+    def anti_afk(self):
+        # Anti-AFK
+        if time.time() - self.last_anti_afk_time > self.config["anti_afk_interval"]:
+            self.move_randomly()
+            self.last_anti_afk_time = time.time()
+            self.log("Anti-AFK ativado")
+    
+    def anti_detection(self):
+        # Anti-detecção
+        if self.config["random_delay"]:
+            time.sleep(random.uniform(0.1, 0.5))
+    
+    def check_for_screenshot(self):
+        # Verificar captura de tela
+        if self.is_screenshot_taken():
+            self.log("Captura de tela detectada!")
+            self.stop_bot()
+    
+    def eat_food(self):
+        # Comer comida
+        if time.time() - self.last_eat_time > 60:  # Comer a cada 60 segundos
+            self.use_food()
+            self.last_eat_time = time.time()
+            self.log("Comendo comida")
+    
+    def get_hp_percent(self):
+        # Simular leitura de HP (implementar reconhecimento de imagem)
+        return random.randint(50, 100)
+    
+    def get_mana_percent(self):
+        # Simular leitura de mana (implementar reconhecimento de imagem)
+        return random.randint(50, 100)
+    
+    def find_target(self):
+        # Simular detecção de monstro (implementar reconhecimento de imagem)
+        return random.choice(self.target_monsters) if self.target_monsters else None
+    
+    def find_loot(self):
+        # Simular detecção de loot (implementar reconhecimento de imagem)
+        return random.choice(self.loot_items) if self.loot_items else None
+    
+    def use_potion(self, hotkey):
+        # Usar poção
+        keyboard.press_and_release(hotkey)
+    
+    def use_spell(self, hotkey):
+        # Usar magia
+        keyboard.press_and_release(hotkey)
+    
+    def use_rope(self):
+        # Usar corda
+        keyboard.press_and_release("f8")  # Exemplo: F8 para corda
+    
+    def use_ladder(self):
+        # Usar escada
+        keyboard.press_and_release("f9")  # Exemplo: F9 para escada
+    
+    def use_food(self):
+        # Usar comida
+        keyboard.press_and_release("f10")  # Exemplo: F10 para comida
+    
+    def move_to(self, x, y):
+        # Mover para coordenadas (x, y)
+        pyautogui.moveTo(x, y)
+        pyautogui.click()
+    
+    def move_randomly(self):
+        # Mover aleatoriamente
+        x = random.randint(0, self.config["screen_resolution"][0])
+        y = random.randint(0, self.config["screen_resolution"][1])
+        self.move_to(x, y)
+    
+    def is_screenshot_taken(self):
+        # Verificar se uma captura de tela foi tirada (implementar)
+        return False
+    
+    def lock_target(self, target):
+        # Travar no alvo
+        self.current_target = target
+        self.target_locked = True
+    
+    def pickup_loot(self, loot):
+        # Pegar loot
+        self.move_to(loot["x"], loot["y"])
+        pyautogui.rightClick()
+    
+    def on_close(self):
+        # Fechar aplicação
+        self.stop_bot()
+        self.root.destroy()
+    
+    def run(self):
+        # Iniciar aplicação
+        self.root.mainloop()
+
+# Iniciar o bot
+if __name__ == "__main__":
+    bot = TibiaLuxBot()
+    bot.run()
